@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +29,7 @@ type DialogServerSession struct {
 
 	mediaConf MediaConfig
 	closed    atomic.Uint32
+	waitNotify chan error
 }
 
 func (d *DialogServerSession) Id() string {
@@ -272,26 +275,99 @@ func (d *DialogServerSession) ReInvite(ctx context.Context) error {
 }
 
 // Refer tries todo refer (blind transfer) on call
-func (d *DialogServerSession) Refer(ctx context.Context, referTo sip.Uri) error {
-	cont := d.InviteRequest.Contact()
-	return dialogRefer(ctx, d, cont.Address, referTo)
-}
-
-func (d *DialogServerSession) handleReferNotify(req *sip.Request, tx sip.ServerTransaction) {
-	dialogHandleReferNotify(d, req, tx)
-}
-
-func (d *DialogServerSession) handleRefer(dg *Diago, req *sip.Request, tx sip.ServerTransaction) {
-	d.mu.Lock()
-	onRefDialog := d.onReferDialog
-	d.mu.Unlock()
-	if onRefDialog == nil {
-		tx.Respond(sip.NewResponseFromRequest(req, sip.StatusNotAcceptable, "Not Acceptable", nil))
-		return
+func (d *DialogServerSession) Refer(ctx context.Context, referTo sip.Uri, referredBy sip.Uri) error {
+	// TODO check state of call
+	if d.LoadState() != sip.DialogStateConfirmed {
+		return fmt.Errorf("call not confirmed")
 	}
 
-	dialogHandleRefer(d, dg, req, tx, onRefDialog)
+	req := sip.NewRequest(sip.REFER, d.InviteRequest.Contact().Address)
+	// UASRequestBuild(req, d.InviteResponse)
+
+	// Invite request tags must be preserved but switched
+	req.AppendHeader(sip.NewHeader("Refer-to", fmt.Sprintf("<%s>", referTo.String())))
+	req.AppendHeader(sip.NewHeader("Referred-by", fmt.Sprintf("<%s>", referredBy.String())))
+
+	res, err := d.Do(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	if res.StatusCode != sip.StatusAccepted {
+		return sipgo.ErrDialogResponse{
+			Res: res,
+		}
+	}
+
+	d.waitNotify = make(chan error)
+
+	select {
+	case e := <-d.waitNotify:
+		if e != nil {
+			return fmt.Errorf("refer failed: %w", e)
+		}
+		return d.Hangup(ctx)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
+
+func (d *DialogServerSession) HandleNotify(notifyReq *sip.Request) error {
+	body := notifyReq.Body()
+	if body == nil {
+		return fmt.Errorf("NOTIFY message has no body")
+	}
+
+	statusLine := string(body)
+    parts := strings.Split(statusLine, " ")
+
+    statusCode, err := strconv.Atoi(parts[1])
+    if err != nil {
+        return fmt.Errorf("invalid status code in SIP response line: %s", parts[1])
+    }
+
+    if d.waitNotify != nil {
+        switch statusCode {
+        case 100: // 100 Trying
+            log.Debug().Msg("Received 100 Trying: request is being processed")
+        case 180: // 180 Ringing
+            log.Debug().Msg("Received 180 Ringing: target is ringing")
+		case 183: // 183 Session Progress
+			log.Debug().Msg("Received 183 Session Progress: target is ringing")
+        case 200: // 200 OK
+            d.waitNotify <- nil // 转接成功
+        default:
+            d.waitNotify <- fmt.Errorf("refer failed: %s", statusLine)
+        }
+    }
+
+    return nil
+}
+
+// func (d *DialogServerSession) handleReferNotify(req *sip.Request, tx sip.ServerTransaction) {
+// 	dialogHandleReferNotify(d, req, tx)
+
+// 	// Invite request tags must be preserved but switched
+// 	req.AppendHeader(sip.NewHeader("Refer-to", fmt.Sprintf("<%s>", referTo.String())))
+// 	req.AppendHeader(sip.NewHeader("Referred-by", fmt.Sprintf("<%s>", referredBy.String())))
+
+// 	res, err := d.Do(ctx, req)
+// 	if err != nil {
+// 		return err
+// 	}
+
+// 	dialogHandleRefer(d, dg, req, tx, onRefDialog)
+// }
+
+// // Refer tries todo refer (blind transfer) on call
+// func (d *DialogServerSession) Refer(ctx context.Context, referTo sip.Uri) error {
+// 	cont := d.InviteRequest.Contact()
+// 	return dialogRefer(ctx, d, cont.Address, referTo)
+// }
+
+// func (d *DialogServerSession) handleReferNotify(req *sip.Request, tx sip.ServerTransaction) {
+// 	dialogHandleReferNotify(d, req, tx)
+// }
 
 func (d *DialogServerSession) handleReInvite(req *sip.Request, tx sip.ServerTransaction) error {
 	if err := d.ReadRequest(req, tx); err != nil {

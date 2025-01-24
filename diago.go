@@ -352,45 +352,6 @@ func NewDiago(ua *sipgo.UserAgent, opts ...DiagoOption) *Diago {
 		return tx.Respond(res)
 	}))
 
-	dg.server.OnRefer(func(req *sip.Request, tx sip.ServerTransaction) {
-		sd, cd, err := MatchDialog(req)
-		if err != nil {
-			if errors.Is(err, sipgo.ErrDialogDoesNotExists) {
-				tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, err.Error(), nil))
-				return
-
-			}
-			tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, err.Error(), nil))
-			return
-		}
-		if cd != nil {
-			cd.handleRefer(dg, req, tx)
-			return
-
-		}
-		// TODO server
-		sd.handleRefer(dg, req, tx)
-	})
-
-	dg.server.OnNotify(func(req *sip.Request, tx sip.ServerTransaction) {
-		// THIS should match now subscribtion instead dialog
-		sd, cd, err := MatchDialog(req)
-		if err != nil {
-			if errors.Is(err, sipgo.ErrDialogDoesNotExists) {
-				tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, err.Error(), nil))
-				return
-
-			}
-			tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, err.Error(), nil))
-			return
-		}
-
-		if cd != nil {
-			cd.handleReferNotify(req, tx)
-			return
-		}
-		sd.handleReferNotify(req, tx)
-	})
 	// server.OnRefer(func(req *sip.Request, tx sip.ServerTransaction) {
 	// 	d, err := MatchDialogServer(req)
 	// 	if err != nil {
@@ -399,6 +360,20 @@ func NewDiago(ua *sipgo.UserAgent, opts ...DiagoOption) *Diago {
 	// 		return
 	// 	}
 	// })
+
+	dg.server.OnNotify(func(req *sip.Request, tx sip.ServerTransaction) {
+		d, err := MatchDialogServer(req)
+		if err != nil {
+			return
+		}
+		if err := d.HandleNotify(req); err != nil {
+			dg.log.Error().Err(err).Msg("Notify finished with error")
+		}
+		res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+		if err := tx.Respond(res); err != nil {
+			dg.log.Error().Err(err).Msg("Notify failed to respond")
+		}
+	})
 
 	return dg
 }
