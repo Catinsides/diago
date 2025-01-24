@@ -261,14 +261,15 @@ func (d *DialogServerSession) ReInvite(ctx context.Context) error {
 }
 
 // Refer tries todo refer (blind transfer) on call
-func (d *DialogServerSession) Refer(ctx context.Context, referTo sip.Uri) error {
+func (d *DialogServerSession) Refer(ctx context.Context, referTo sip.Uri, referredBy sip.Uri) error {
 	// TODO check state of call
 
 	req := sip.NewRequest(sip.REFER, d.InviteRequest.Contact().Address)
 	// UASRequestBuild(req, d.InviteResponse)
 
 	// Invite request tags must be preserved but switched
-	req.AppendHeader(sip.NewHeader("Refer-to", referTo.String()))
+	req.AppendHeader(sip.NewHeader("Refer-to", fmt.Sprintf("<%s>", referTo.String())))
+	req.AppendHeader(sip.NewHeader("Referred-by", fmt.Sprintf("<%s>", referredBy.String())))
 
 	res, err := d.Do(ctx, req)
 	if err != nil {
