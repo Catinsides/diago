@@ -362,6 +362,20 @@ func NewDiago(ua *sipgo.UserAgent, opts ...DiagoOption) *Diago {
 	// 	}
 	// })
 
+	dg.server.OnNotify(func(req *sip.Request, tx sip.ServerTransaction) {
+		d, err := MatchDialogServer(req)
+		if err != nil {
+			return
+		}
+		if err := d.HandleNotify(req); err != nil {
+			dg.log.Error().Err(err).Msg("Notify finished with error")
+		}
+		res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+		if err := tx.Respond(res); err != nil {
+			dg.log.Error().Err(err).Msg("Notify failed to respond")
+		}
+	})
+
 	return dg
 }
 
