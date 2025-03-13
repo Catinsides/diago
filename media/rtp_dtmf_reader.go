@@ -56,35 +56,53 @@ func (w *RTPDtmfReader) Read(b []byte) (int, error) {
 }
 
 func (w *RTPDtmfReader) processDTMFEvent(ev DTMFEvent) {
-	if log.Logger.GetLevel() == zerolog.DebugLevel {
-		// Expensive call on logger
-		log.Debug().Interface("ev", ev).Msg("Processing DTMF event")
-	}
-	if ev.EndOfEvent {
-		if w.lastEv.Duration == 0 {
-			return
-		}
-		// Does this match to our last ev
-		// Consider Event can be 0, that is why we check is also lastEv.Duration set
-		if w.lastEv.Event != ev.Event {
-			return
-		}
-
-		dur := ev.Duration - w.lastEv.Duration
-		if dur <= 3*160 { // Expect at least ~50ms duration
-			log.Debug().Uint16("dur", dur).Msg("Received DTMF packet but short duration")
-			return
-		}
-
-		w.dtmf = DTMFToRune(ev.Event)
-		w.dtmfSet = true
-		w.lastEv = DTMFEvent{}
-		return
-	}
-	if w.lastEv.Duration > 0 && w.lastEv.Event == ev.Event {
-		return
-	}
-	w.lastEv = ev
+    if log.Logger.GetLevel() == zerolog.DebugLevel {
+        // Expensive call on logger
+        log.Debug().Interface("ev", ev).Msg("Processing DTMF event")
+    }
+    
+    // 处理结束事件
+    if ev.EndOfEvent {
+        // 如果没有前序事件，或者事件类型与上一个不同，则忽略
+        if w.lastEv.Duration == 0 || w.lastEv.Event != ev.Event {
+            return
+        }
+        
+        // 如果已经设置了dtmf并且是同一个事件，避免重复处理
+        if w.dtmfSet && DTMFToRune(ev.Event) == w.dtmf {
+            return
+        }
+        
+        dur := ev.Duration - w.lastEv.Duration
+        if dur < 160 { // 只要求至少 ~20ms 的持续时间
+            log.Debug().Uint16("dur", dur).Msg("Discarded DTMF packet with too short duration")
+            return
+        }
+        
+        w.dtmf = DTMFToRune(ev.Event)
+        w.dtmfSet = true
+        
+        // 使用字符形式显示DTMF，确保日志的一致性
+        log.Debug().Str("dtmf", string(w.dtmf)).Msg("Received DTMF")
+        
+        w.lastEv = DTMFEvent{} // 重置上一个事件
+        return
+    }
+    
+    // 对于非结束事件的处理逻辑
+    // 如果是相同事件的新包，更新持续时间
+    if w.lastEv.Event == ev.Event && w.lastEv.Duration > 0 {
+        // 只在持续时间增加时更新，避免乱序包问题
+        if ev.Duration > w.lastEv.Duration {
+            w.lastEv = ev
+        }
+        return
+    }
+    
+    // 新的 DTMF 事件开始
+    // 重置前一个 DTMF 设置状态
+    w.dtmfSet = false
+    w.lastEv = ev
 }
 
 func (w *RTPDtmfReader) ReadDTMF() (rune, bool) {
